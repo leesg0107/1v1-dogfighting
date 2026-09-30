@@ -1,0 +1,309 @@
+# ===== R11 LOW-ALT COMPETITION (260718) — RING-2: migrate the champion to the 610-914m band
+# =====  (was R10 FAST-KILL 260717) — retrain the r9 champion for early decisive conversion =====
+# VISION (user, 260717 after LIVE viewer observation — supersedes margin-only on the speed axis):
+#   "서로 데미지를 주고받으며 최대한 빠른 시간 내에 격추" + 에피소드 전 구간 적극 교전.
+#   Measured pathology (viewer + 200-ep GCAS-corrected baseline): 0 kill-reason wins in 200 eps
+#   (all health-margin), mid-game 60-120s dead time (zoom-climb to 10-11.6km / fly-apart to 8-10km),
+#   conversion only in the last seconds. Pursuit skill EXISTS (re-approach observed); the incentive
+#   structure never charged for time. See agent-memory: viewer-verification-r9-260717,
+#   user-vision-fastkill-update-260717.
+#
+# ★ CRITICAL-AUDIT DESIGN (every lever adopted/deferred against the recorded failure laws):
+#   L1 TIME PRESSURE = ADOPTED WITH ZERO NEW REWARD CODE. Mechanisms already in the stack:
+#      (a) phased WEZ coeff 1.0->0.3->0.1 (damage income is 3-10x more valuable before 100s),
+#      (b) gamma 0.995 @10Hz (kill 10s sooner = ~1.7x larger local return),
+#      (c) anti-draw terminal set (timeout/no-engage/disengage = LOSS, draw -10),
+#      (d) timeout_win_proportional (a margin-thin late win pays a fraction of +80).
+#      REJECTED: a new win_time_bonus / time-discount knob — double-stacks early-aggression
+#      incentives on top of phasing (r3-anchored brawler precedent) and adds a fresh farm surface.
+#   L2 PHASED WEZ = ADOPTED (competition-faithful; already ran collapse-free in the r9-campaign
+#      exploiter legs; the seed is BC/DAgger-based so the 1-deg-cone sparsity that once forced the
+#      always-open crutch no longer bites — reward-sparsity-is-root applies to SCRATCH PPO).
+#   L3 ALTITUDE CEILING = DEFERRED (no new knob). Training already terminates fly-apart as LOSS at
+#      8 km (max_disengage_range_m + disengage_as_loss). Gate G5 measures p95 separation + climb
+#      excursions on the DISTILLED candidate; add the knob only if the pathology survives distill.
+#   L4 ENGAGEMENT-FORCING OPPONENTS = ADOPTED via pool weights: 35% exploiter checkpoints (trained
+#      with un-gated aggressive engagement rewards = they hunt), 30% frozen r9 mirror (punishes
+#      one-sided disengagement), 35% style guards (C / 950 / r3b retention yardsticks).
+#   L5 MARGIN DISCIPLINE (brawler guard) = MAIN-LINE LAW RESTORED: own_damage_scale 100 (NOT the
+#      exploiter's 30) + acq/lead margin gates ON (260714 draw-Nash fix). Fast-kill != brawl; the
+#      encoding is "clean margin, earned early".
+#   OPEN STRATEGIC FLAG (pre-r11, to confirm with organizers): real-server capture 20260514 flew
+#      595-1067 m (INSIDE the GCAS<1000m band) while the local viewer defaults Alt=15000ft(4572m).
+#      If matches truly run in the low band, GCAS-envelope redesign + low-alt training outranks
+#      fast-kill (the policy is GCAS-overridden below 1000 m). r10 keeps the 7000 m training band;
+#      gate battery adds ONE low-alt probe cell (report-only, not gated).
+#
+# PREP (once, before launch):
+#   python student/tools/make_residual_seed.py \
+#     --base artifacts/models/team01/bc_seed/bundle_r9 \
+#     --out  artifacts/models/team01/bc_seed/bundle_r9_residual
+# RUN: cd release && python scripts/run_experiment.py experiments/ours_ppo_r10_fastkill.yaml
+name: r11_lowalt
+script: train_rllib
+
+env:
+  observation_mode: tactical24_fv
+  reward_module: student.my_reward
+  max_engage_time: 200.0
+  episode_step_limit: 2400
+
+curriculum:
+  mode: fixed_ic
+
+env_config:
+  # ★ 260717 WINDOWS-NATIVE LAUNCH: no bridge block => train_rllib.py:89 takes the native
+  #   DogFightEnvWrapper path (JSBSimAIPLib.dll loads directly on this Windows box — verified
+  #   today by the 200-ep GCAS-parity eval on the same stack). To run on the Ubuntu/wine host
+  #   instead, restore the block:
+  # bridge:
+  #   use_wine: true
+  #   wine: wine
+  #   python: "C:\\Python311\\python.exe"
+  #   port_base: 7600
+  #   autostart: true
+  #   startup_timeout_s: 120
+  step_ratio: 6
+  min_altitude: 300.0
+  max_disengage_range_m: 8000.0   # ★ L3: fly-apart bounded IN TRAINING (8km = terminal LOSS below)
+  reward:
+    step_penalty: -0.005
+    pursuit_scale: 0.0
+    lead_scale: 0.0
+    lag_scale: 0.0
+    # ── engagement terms: MAIN-line moderation (exploiter's 15/8 un-gated set was specialist-only;
+    #    at main scale it re-opens the draw-Nash dense farm the 260714 margin gates closed) ──
+    wez_entry_bonus: 5.0        # re-engagement incentive kept, below exploiter 8 (farm headroom)
+    wez_entry_adv_min: 0.0
+    acq_scale: 12.0
+    acq_k_deg: 18.0
+    acq_range_gate_m: 914.0
+    acq_adv_min: 0.0
+    acq_close_min_mps: -1.0e+9
+    acq_decay_per_s: 0.0        # ★ nodecay law (260711 C-branch) — decay was the acq income-shift poison
+    acq_ep_cap: 8.0             # between recipe 6 and exploiter 15: sustained engagement pays, capped
+    damage_scale: 50.0
+    own_damage_scale: 100.0     # ★★ MAIN-LINE LAW (r3b 1-variable, 32-agent verified): getting hit
+                                #   costs 2x dealing. THE anti-brawler guard for an aggression campaign.
+    gun_snap_weight: 1.0
+    gun_snap_k_deg: 2.5
+    gun_snap_max_m: 914.0
+    win_reward: 80.0
+    timeout_win_reward: 80.0
+    timeout_win_proportional: true
+    timeout_win_full_margin: 0.3
+    timeout_loss_reward: -80.0      # ★ anti-draw: clean 200s standoff = LOSS
+    loss_reward: -100.0
+    disengage_as_loss: true         # ★ L1/L3: drift past 8km = LOSS (kills the fly-apart strategy)
+    timeout_health_margin: 0.02
+    no_engage_timeout_as_loss: true # ★ anti-draw: both-healthy timeout = LOSS
+    no_engage_health_floor: 0.98
+    draw_reward: -10.0
+    hp_depletion_weight: 0.0
+    acq_el_gate_deg: 180.0
+    # ★★ v2 (260717 it50 LIVE CORRECTION — passivity spiral caught by telemetry): gates OFF.
+    #   v1 imported the 260714 margin-gate law, but that law is a SELF-play draw-Nash device —
+    #   take-turns orbiting needs BOTH sides learning. This run's pool is 100% FROZEN anchors
+    #   (the exploiter precedent, which turned gates OFF for exactly this reason and PASSED its
+    #   gates). Measured v1 failure shape (it0->50): dense income ~0 in the even-or-behind 55%+
+    #   of episodes, every terminal negative, action_rate -287/ep the only reducible cost =>
+    #   gradient direction "do less": ATAbehind 72->44, WEZ_ep 0.3->0.0, reward -196->-494,
+    #   KL ~1e-4 (policy frozen, critic converging on hopelessness). The anti-brawler guard is
+    #   own_damage_scale 100 (kept), NOT the gates.
+    acq_margin_gate: false
+    lead_ratchet_margin_gate: false
+    ratchet_margin_floor: -0.01
+    pbrs_scale: 0.0
+    pbrs_gamma: 1.0
+    pbrs_lead_only: true
+    pbrs_lead_w: 4.0
+    pbrs_lead_range_m: 3000.0
+    pbrs_lead_k_deg: 25.0
+    # ★ lead-ratchet exactly as r3c (the reversal-commit credit fix; arm-latch post-pass only)
+    lead_ratchet_scale: 10.0
+    lead_ratchet_ep_cap: 4.0
+    lead_ratchet_k_deg: 25.0
+    lead_ratchet_t_min_s: 1.0
+    lead_ratchet_arm_az_deg: 90.0
+    lead_ratchet_range_lo_m: 300.0
+    lead_ratchet_range_hi_m: 2500.0
+    lead_ratchet_aa_max_deg: 160.0
+    lead_ratchet_decay_per_s: 0.0   # ★ MUST stay 0 (STAGE-R length-farm law)
+    pbrs_posture_w: 0.0
+    pbrs_closure_w: 0.0
+    alt_cubed_weight: 0.0
+    aoa_penalty_weight: 0.03
+    action_rate_penalty: 0.05       # ★ v2 0.10->0.05 (it50 correction): 0.10 was the EXPLOITER pairing
+                                    #   (its un-gated income ~2x ours could absorb it). At main-line income
+                                    #   scale the -287/ep smoothing cost dominated every dense term and fed
+                                    #   the passivity gradient. 0.05 = the r3b/r3c mainline precedent.
+    pitch_rate_penalty_weight: 0.0
+    pitch_rate_deadband_degps: 30.0
+    # ★ RING-2 STAGE-2a (260718): the OLD 1200/1500 band taxed the WHOLE 610-914m competition
+    #   band -0.05/step (~-100/ep) and swamped acq(cap8)+lead(cap4) -> the policy just climbed out.
+    #   Lowered so 610-914m is penalty-FREE; GCAS (new 450m-floor envelope) owns crash-prevention.
+    low_altitude_penalty: 0.0
+    low_altitude_soft_m: 500.0
+    very_low_altitude_penalty: 0.02
+    low_altitude_hard_m: 350.0
+    position_scale: 0.0
+    opponent_ground_reward: 0.0
+    # ★ RING-2 STAGE-3 (260718) anti-out-boxing (competition manual slide15: running away = penalty).
+    #   Continuous triple-gated pure penalty (FAR & nose-AWAY & OPENING); own_damage_scale 100 +
+    #   no margin gate are the co-guards; range 3000 >= lead_ratchet_range_hi 2500 (never taxes the turn).
+    outbox_penalty_weight: 0.03
+    outbox_range_m: 3000.0
+    outbox_ramp_m: 3000.0
+    outbox_ata_deg: 90.0
+    outbox_closing_eps_mps: 0.0
+  initial_scenario:
+    mode: mixed
+    mix:
+      # ── RETENTION 0.45 (measured-achievable cells, poison law; copied from the gate-passing recipe) ──
+      - {weight: 0.09, mode: rear_aspect, offtail_deg_range: [-5.0, 5.0], distance_m_range: [250.0, 500.0],
+         speed_mps_range: [230, 270]}                                                          # gimme canary
+      - {weight: 0.06, mode: rear_aspect, offtail_deg_range: [30.0, 45.0], distance_m_range: [300.0, 900.0],
+         speed_mps_range: [230, 270]}                                                          # off45 +
+      - {weight: 0.06, mode: rear_aspect, offtail_deg_range: [-45.0, -30.0], distance_m_range: [300.0, 900.0],
+         speed_mps_range: [230, 270]}                                                          # off45 -
+      - {weight: 0.08, mode: rear_aspect, offtail_deg_range: [50.0, 70.0], distance_m_range: [900.0, 1500.0],
+         speed_mps_range: [230, 270]}                                                          # quarter +
+      - {weight: 0.08, mode: rear_aspect, offtail_deg_range: [-70.0, -50.0], distance_m_range: [900.0, 1500.0],
+         speed_mps_range: [230, 270]}                                                          # quarter -
+      - {weight: 0.04, mode: rear_aspect, offtail_deg_range: [30.0, 45.0], distance_m_range: [600.0, 900.0],
+         speed_mps_range: [230, 270], own_alt_offset_m_range: [150.0, 450.0], own_alt_offset_sign: 1}
+      - {weight: 0.04, mode: rear_aspect, offtail_deg_range: [-45.0, -30.0], distance_m_range: [600.0, 900.0],
+         speed_mps_range: [230, 270], own_alt_offset_m_range: [150.0, 450.0], own_alt_offset_sign: -1,
+         init_pitch_on_target: true, pitch_offset_deg_range: [5.0, 15.0]}
+      # ── MERGE 0.55 (the main event + the fast-kill training ground; angle card = measured bands) ──
+      - {weight: 0.20, mode: two_circle_headon, alpha_deg_range: [25, 40], turn_diameter_ft: 700,
+         separation_jitter_ft: [1200, 1800], roll_range_deg: [0, 0], speed_mps_range: [200, 250],
+         altitude_m_range: [610, 914]}
+      - {weight: 0.15, mode: two_circle_headon, alpha_deg_range: [45, 60], turn_diameter_ft: 700,
+         separation_jitter_ft: [1200, 1800], roll_range_deg: [0, 0], speed_mps_range: [200, 250],
+         altitude_m_range: [610, 914]}
+      - {weight: 0.10, mode: two_circle_headon, alpha_deg_range: [60, 75], turn_diameter_ft: 700,
+         separation_jitter_ft: [1200, 1800], roll_range_deg: [0, 0], speed_mps_range: [200, 250],
+         altitude_m_range: [610, 914]}
+      - {weight: 0.10, mode: two_circle_headon, alpha_deg_range: [75, 90], turn_diameter_ft: 700,
+         separation_jitter_ft: [1200, 1800], roll_range_deg: [0, 0], speed_mps_range: [200, 250],
+         altitude_m_range: [610, 914]}
+  wez:
+    angle_deg: 2.0
+    min_range_m: 152.4
+    max_range_m: 914.4
+    phase_schedule:
+      # ★ L2 COMPETITION-FAITHFUL time-phasing (vendor schedule; collapse-free in r9-campaign legs).
+      #   Early conversion pays 1.0; late chips pay 0.3/0.1 => the fast-kill pressure lives HERE.
+      - {t_start_s: 0.0,   angle_deg: 2.0, min_range_m: 152.4, max_range_m: 914.4,  coeff: 1.0}
+      - {t_start_s: 100.0, angle_deg: 4.0, min_range_m: 152.4, max_range_m: 1066.8, coeff: 0.3}
+      - {t_start_s: 150.0, angle_deg: 6.0, min_range_m: 152.4, max_range_m: 1219.2, coeff: 0.1}
+  target_provider:
+    kind: pool
+    # ★ L4 ENGAGEMENT-FORCING POOL: 0.35 exploiters (hunt/aggress), 0.30 r9 mirror (punishes
+    #   one-sided disengagement; opponent-history fix 28933d7 lets it fly WITH its fv history),
+    #   0.35 style/retention guards. All frozen anchors = stationary yardsticks (probs anchor 1.0).
+    watch_dirs:
+      - "artifacts/models/team01/r11_lowalt/bundle_*"
+    anchors:
+      - {kind: bundle, id: "r9mirror", path: "artifacts/models/team01/bc_seed/bundle_r9", weight: 0.30}
+      - {kind: bundle, id: "explFVp4", path: "artifacts/models/team01/exploiter_fv_pool/bundle_000400", weight: 0.20}
+      - {kind: bundle, id: "explR3rl", path: "artifacts/models/team01/exploiter_r3rl/bundle_000400", weight: 0.15}
+      - {kind: bundle, id: "champC",   path: "artifacts/models/team01/bc_seed/bundle_fs_champion_fv", weight: 0.15}
+      - {kind: bundle, id: "mir950fv", path: "artifacts/models/team01/leadturn/bundle_000950_fv", weight: 0.10}
+      - {kind: bundle, id: "r3b900fv", path: "artifacts/models/team01/r3b_champion_it900_fv", weight: 0.10}
+    probs: {latest: 0.0, pool: 0.0, anchor: 1.0}
+    pfsp_power: 2.0
+    pfsp_mode: hard
+    pool_explore_eps: 0.0
+    window: 60
+    results_dir: artifacts/selfplay/results/r11_lowalt
+
+algo:
+  name: ppo
+  framework: torch
+  lr: 1.0e-4
+  gamma: 0.995
+  train_batch_size: 8192
+  minibatch_size: 512
+  gae_lambda: 0.97
+  clip_param: 0.2
+  entropy_coeff: 0.0002
+  num_epochs: 6
+  grad_clip: 1.0
+  vf_clip: 40000.0
+  anchor:
+    enabled: false            # residual IS the structural trust region (260716 law)
+    bundle: artifacts/models/team01/bc_seed/bundle_r9
+    coeff: 1.0
+    ata_full_deg: 15.0
+    ata_zero_deg: 30.0
+    obs_index: 9
+    obs_scale_deg: 180.0
+    critic_repair_iters: 0
+  residual:
+    enabled: true             # ★ frozen r9 base + bounded residual: the gradient STRUCTURALLY
+    eps: 0.40                 # ★ RING-2 (260718) 0.15->0.40:   cannot degrade the champion's firing kernel (fragile-FIRE law)
+    hidden: 128
+    val_hidden: 256
+  mlp:
+    enabled: true
+    fcnet_hiddens: [256, 256]
+    fcnet_activation: relu
+    head_fcnet_hiddens: []
+    head_fcnet_activation: relu
+    vf_share_layers: true
+    free_log_std: false
+    log_std_clip_param: 0.6
+    log_std_clip_asym: [-1.5, -0.5]   # sigma_max 0.607 (merge-band exploration; floor keeps precision)
+
+runtime:
+  iterations: 400
+  num_env_runners: 12
+  num_envs_per_env_runner: 1
+  init_bundle: artifacts/models/team01/bc_seed/bundle_r9_residual_e40   # ★ RING-2: eps0.40 seed (r10 native eps0.15 too small for the 7000->760m migration) — PREP step output (make_residual_seed)
+  rollout_fragment_length: auto
+  batch_mode: truncate_episodes
+  save_lightweight_bundle: true
+  lightweight_bundle_frequency: 25
+  save_native_checkpoint: true
+  native_checkpoint_frequency: 200
+
+dashboard:
+  enabled: true
+  logdir: artifacts/dashboard
+
+policy_probe:
+  enabled: true
+  interval: 25
+  steps: 4
+  print: true
+
+engagement_log:
+  enabled: true
+  interval: 25
+  steps: 2000
+  episodes: 1
+  print: true
+
+output:
+  name: team01
+  tag: r11_lowalt
+
+notes: "R10 FAST-KILL MAIN (260717). PRE-REGISTERED GATES - instruments: diagnose_merge N=24 det
+  seed 4321 (confirm on 7000) vs {r9 frozen, C, mir950_fv}; run_eval_matrix (GCAS-parity build,
+  --competition-wez) headon family seed 1000; trajectory analyzer on engagement logs (density
+  metrics). Staged eval it150 (kill-early) / 300 / 400, checkpoint-selection over 25-bundle grid.
+  G1 NO-REGRESSION: margin vs mir950_fv >= +8% AND zoo-rep W-rate >= r9's (no retention sacrifice -
+  the r1 seesaw law). G2 DRAW-KILL: draw rate vs r9mirror <= 30% (baseline ~45-50%). G3 SPEED:
+  median time-to-first-damage down >=25% vs r9 AND phase-1 (0-100s) share of episode damage >= 60%
+  (this gate = the user's fast-kill vision, measured). G4 DISCIPLINE: own-dmg <= 1.2x r9 baseline
+  AND not monotone-rising across checkpoints (r3 trajectory law - a rising curve at ANY level is a
+  kill signal). G5 FLY-APART: p95 max-separation <= 8 km AND time-beyond-4km <= 25% of episode.
+  KILL-EARLY signatures: entropy->0, mean-railing, FIRE-count collapse (fragile-firing), own-dmg
+  monotone climb. GO => standard ratchet distill (zoo-DAgger on champion-flown states + nonneg
+  RL-composite, bc_pretrain margin-floor 0) and re-gate G1-G5 on the DISTILLED bundle (distill can
+  wash out terminal-signal behaviors - verify the fly-apart fix survives it). NO-GO => r9 ships;
+  the surviving levers list (finisher-first, teacher-PN, low-alt migration) is the r11 menu.
+  LOW-ALT PROBE (report-only): one diagnose_merge cell at altitude_m 800 vs mir950_fv - measures
+  GCAS-band behavior for the competition-altitude open question (do NOT gate on it in r10)."
