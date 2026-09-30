@@ -33,7 +33,9 @@ A hybrid of one neural network and three rule-based layers.
 
 ## How we got there
 
-1. **Pure RL (failed).** About a month of reward shaping and curricula. The reward was too sparse and several measurement bugs went unnoticed, so the agent never learned to win the head-on merge.
+1. **Pure RL (failed).** We spent about a month on reward shaping and curricula, and the agent never learned to win the head-on merge. There were two reasons:
+   - **Sparse reward.** Damage only accrues inside a 1° cone, so outside it the learning signal is zero. Kills take 50–1,200 decisions, far longer than the horizon PPO could credit. Each shaping term we added to fill the gap was either exploited or, once gated, stopped teaching anything.
+   - **Compute and time.** Everything ran on one workstation (one RTX 4090, 16 CPU cores). The Windows simulator ran under Wine, which limited throughput. Our largest single run was about 35 million environment steps, and all runs together came to about 0.8 billion. Heron Systems won the 2020 DARPA AlphaDogfight Trials with pure end-to-end RL, but reportedly trained on billions of dogfights (about 4 billion training examples) over roughly five weeks. That is two orders of magnitude more experience per agent than we could afford in two months.
 2. **Scripted teacher and imitation.** We wrote a rule-based teacher (reverse, intercept, track; `student/selfplay/autopilot_teacher.py`) and distilled it with behavior cloning and four DAgger rounds (`student/tools/bc_pretrain.py`).
 3. **History in the observation.** A memoryless policy averaged the teacher's left-or-right decisions into indecision. Adding past frames (`tactical24_fv`) cut the draw rate from 42% to 29%.
 4. **Residual PPO.** Plain PPO fine-tuning destroyed the imitated skills. We froze the base network and trained only a bounded residual head (`residual_module.py`, `anchor_ppo_learner.py`), then adapted it to competition altitude (`experiments/ours_ppo_r11_lowalt.yaml`).
@@ -76,3 +78,14 @@ student/
 experiments/
   ours_ppo_r11_lowalt.yaml  low-altitude (760 m) PPO config
 ```
+
+## References
+
+- C. R. DeMay, E. L. White, W. D. Dunham, J. A. Pino, "AlphaDogfight Trials: Bringing Autonomy to Air Combat," *Johns Hopkins APL Technical Digest* 36(2), pp. 154–163, 2022. Heron Systems' winning agent and its self-play training setup.
+- A. P. Pope et al., "Hierarchical Reinforcement Learning for Air-to-Air Combat," ICUAS 2021, arXiv:2105.00990. Lockheed Martin's second-place hierarchical agent.
+- J. H. Bae, H. Jung, S.-H. Kim, S. Kim, Y.-D. Kim, "Deep Reinforcement Learning-Based Air-to-Air Combat Maneuver Generation in a Realistic Environment," *IEEE Access* 11, pp. 26427–26440, 2023. Raw-stick control with a recurrent SAC policy and a reverse curriculum.
+- J. Chai, W. Chen, Y. Zhu, Z.-X. Yao, D. Zhao, "A Hierarchical Deep Reinforcement Learning Framework for 6-DOF UCAV Air-to-Air Combat," *IEEE Trans. SMC: Systems* 53(9), pp. 5417–5429, 2023.
+- C. Chen, T. Song, L. Mo, M. Lv, D. Lin, "Autonomous Dogfight Decision-Making for Air Combat Based on Reinforcement Learning with Automatic Opponent Sampling," *Aerospace* 12(3), 265, 2025. A single-GPU training budget for 1v1 dogfighting.
+- A. Selmonaj et al., "Coordinated Strategies in Realistic Air Combat by Hierarchical Multi-Agent RL," arXiv:2510.11474, 2025.
+- S. Li et al., "An Imitative Reinforcement Learning Framework for Pursuit-Lock-Launch Missions," arXiv:2406.11562. Imitation combined with RL for air combat.
+- Q. Liu, Y. Jiang, X. Ma, *Light Aircraft Game (CloseAirCombat)*, JSBSim-based 1v1 air-combat RL benchmark, github.com/liuqh16/CloseAirCombat.
